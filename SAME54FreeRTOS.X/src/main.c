@@ -15,10 +15,16 @@
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "queue.h"
+
 #include "drivers/uart_dma.h"
 
 static TaskHandle_t gBlinkTask = NULL;
 volatile uint32_t gBlinkPeriodMs = 500;
+
+/* Queue + TX task for UART DMA logger */
+static QueueHandle_t gUartLogQ = NULL;
+static TaskHandle_t  gUartTxTask = NULL;
 
 /* --------- Demo tasks --------- */
 static void vBlinkTask(void *pvParameters)
@@ -76,29 +82,43 @@ static void vLogTask(void *pvParameters)
     for (;;)
     {
         UART2_DMA_Log("[RTOS] tick=%lu | LED0=%s | period=%lu ms\r\n",
-               (unsigned long)xTaskGetTickCount(),
-               board_led0_is_on() ? "ON" : "OFF",
-               (unsigned long)gBlinkPeriodMs);
+                      (unsigned long)xTaskGetTickCount(),
+                      board_led0_is_on() ? "ON" : "OFF",
+                      (unsigned long)gBlinkPeriodMs);
+
         vTaskDelay(pdMS_TO_TICKS(gBlinkPeriodMs));
     }
 }
-int main(void) {
+
+int main(void)
+{
+    SystemConfigPerformance();   /* MUST be first */
     
-    SystemConfigPerformance();   /* MUST be first (your rule) */
-    board_init();                /* UART/RTCC/banner */
-    UART2_DMA_Log("\r\nBoard initialization completed...\r\n");
+    /* Create the FreeRTOS queue early (safe before scheduler starts). */
+    gUartLogQ = xQueueCreate(DMA_LOG_QUEUE_SIZE, sizeof(UART2_DMA_LogMsg_t));
+
+    /* Attach queue now (TX task not created yet). This prevents early drops
+       if board_init() logs using UART2_DMA_Log(). */
+    UART2_DMA_LogServiceAttach(gUartLogQ, NULL);
+
+    board_init();                /* UART/RTCC/banner/DMA init etc. */
     __enable_irq();
 
-    /* Priority suggestion:
-       - blink + button higher
-       - log lower */
-    xTaskCreate(vBlinkTask,  "blink", 512, NULL, 2, &gBlinkTask);
-    xTaskCreate(vButtonTask, "button",512, NULL, 2, NULL);
-    xTaskCreate(vLogTask,    "log",   768, NULL, 1, NULL);
+    /* Create UART DMA TX consumer (higher prio helps drain logs smoothly). */
+    xTaskCreate(UART2_DMA_TxTask, "uart_tx", 768, NULL, 3, &gUartTxTask);
+
+    /* Attach again with the real TX task handle (for ISR notification). */
+    UART2_DMA_LogServiceAttach(gUartLogQ, gUartTxTask);
+
+    UART2_DMA_Log("\r\nBoard initialization completed...\r\n");
+
+    /* Your demo tasks */
+    xTaskCreate(vBlinkTask,  "blink",  512, NULL, 2, &gBlinkTask);
+    xTaskCreate(vButtonTask, "button", 512, NULL, 2, NULL);
+    xTaskCreate(vLogTask,    "log",    768, NULL, 1, NULL);
 
     vTaskStartScheduler();
 
-    /* If you end up here, heap/stack config is wrong or scheduler failed */
     for (;;)
     {
         __BKPT(0);
@@ -106,4 +126,3 @@ int main(void) {
 
     return (EXIT_SUCCESS);
 }
-

@@ -6,6 +6,11 @@
 #include <stdbool.h>
 #include <stdarg.h>
 
+/* FreeRTOS objects used by log service */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
+
 /* ============================================================================
  * UART DMA Configuration
  * ============================================================================ */
@@ -75,6 +80,34 @@ void UART2_DMA_SetCallback(UART2_DMA_Callback_t cb);
  * Wait for DMA transfer to complete (blocking).
  */
 void UART2_DMA_Wait(void);
+
+/* ---------------------------------------------------------------------------
+ * FreeRTOS learning demo: Queue + Task Notification (DMA UART logger)
+ * --------------------------------------------------------------------------- */
+
+/**
+ * Message item stored in the FreeRTOS log queue.
+ */
+typedef struct
+{
+    uint16_t len;
+    char     buf[DMA_LOG_BUF_SIZE];
+} UART2_DMA_LogMsg_t;
+
+/**
+ * Attach the FreeRTOS queue and the TX task handle used by the log service.
+ * Call this in main() after creating the queue, and again after creating TX task
+ * (if you attach queue earlier with tx_task = NULL).
+ */
+void UART2_DMA_LogServiceAttach(QueueHandle_t q, TaskHandle_t tx_task);
+
+/**
+ * UART2 DMA TX consumer task:
+ * - Receives UART2_DMA_LogMsg_t from queue
+ * - Starts DMA TX
+ * - Waits for DMAC ISR notification (DMA complete / error)
+ */
+void UART2_DMA_TxTask(void *arg);
 
 /* ---------------------------------------------------------------------------
  * Non-blocking logger API (queueing, DMA-driven)
